@@ -1,0 +1,25 @@
+server:
+  port: 8080
+
+router:
+  services:
+    servicea:
+      baseUrl: http://servicea-backend:8080
+      rateLimit: 100
+      rateLimitPeriod: MINUTE
+      routes:
+        - path: /servicea
+          targetUrl: http://servicea-backend-v1:8080
+          weight: 80
+        - path: /servicea
+          targetUrl: http://servicea-backend-v2:8080
+          weight: 20
+          headers:
+            x-version: v2
+    serviceb:
+      baseUrl: http://serviceb-backend:8080
+      rateLimit: 50
+      rateLimitPeriod: MINUTE
+      routes:
+        - path: /serviceb
+          targetUrl: http://serviceb-backend:8080

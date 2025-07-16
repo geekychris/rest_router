@@ -1,0 +1,9 @@
+Implement a router for rest calls.  Assume that rest uri's contain as part of their uri pah include the service name as part of the uri, such as http://mycompany.com/servicea/path vs http://mycompany.com/serviceb/path.
+This service should use techniques such as none blocking io for effiency.
+Implement some type of rate limiting requests.  these rates should be definable per service.  
+All requests without payload should be logged to a log file or kafka.
+The service should support plugins so that messages can be shaped / augmented or filtered.
+Assume this service will be horrizontably scalable.
+Implement this using java 21 and spring.
+It should also be possible to route to multiple backend services even with the same uri based upon uri parameters or header parameters.  This would be primarily to support a/b testing.
+Include tests.
