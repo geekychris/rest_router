@@ -20,10 +20,11 @@ public class RouterProperties {
         this.services = services;
     }
 
-    public static class ServiceConfig {
+public static class ServiceConfig {
         private String baseUrl;
-        private int rateLimit;
-        private String rateLimitPeriod = "MINUTE";
+        private RateLimitConfig defaultRateLimit;
+        private Map<String, RateLimitConfig> clientRateLimits = new HashMap<>();
+        private String clientIdHeader = "X-Client-Id";
         private List<RouteConfig> routes;
 
         public String getBaseUrl() {
@@ -34,20 +35,28 @@ public class RouterProperties {
             this.baseUrl = baseUrl;
         }
 
-        public int getRateLimit() {
-            return rateLimit;
+        public RateLimitConfig getDefaultRateLimit() {
+            return defaultRateLimit;
         }
 
-        public void setRateLimit(int rateLimit) {
-            this.rateLimit = rateLimit;
+        public void setDefaultRateLimit(RateLimitConfig defaultRateLimit) {
+            this.defaultRateLimit = defaultRateLimit;
         }
 
-        public String getRateLimitPeriod() {
-            return rateLimitPeriod;
+        public Map<String, RateLimitConfig> getClientRateLimits() {
+            return clientRateLimits;
         }
 
-        public void setRateLimitPeriod(String rateLimitPeriod) {
-            this.rateLimitPeriod = rateLimitPeriod;
+        public void setClientRateLimits(Map<String, RateLimitConfig> clientRateLimits) {
+            this.clientRateLimits = clientRateLimits;
+        }
+
+        public String getClientIdHeader() {
+            return clientIdHeader;
+        }
+
+        public void setClientIdHeader(String clientIdHeader) {
+            this.clientIdHeader = clientIdHeader;
         }
 
         public List<RouteConfig> getRoutes() {

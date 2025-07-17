@@ -1,7 +1,10 @@
 package com.mycompany.router.handler;
 
+import com.mycompany.router.config.RateLimitConfig;
 import com.mycompany.router.config.RouterProperties;
 import com.mycompany.router.plugin.RouterPlugin;
+import com.mycompany.router.service.RateLimiterService;
+import com.mycompany.router.service.ServiceRegistry;
 import io.github.resilience4j.ratelimiter.RateLimiter;
 import io.github.resilience4j.ratelimiter.RateLimiterConfig;
 import org.junit.jupiter.api.BeforeEach;
@@ -86,8 +89,9 @@ class RouterHandlerTest {
         // Setup test service configuration
         RouterProperties.ServiceConfig serviceConfig = new RouterProperties.ServiceConfig();
         serviceConfig.setBaseUrl("http://test-service:8080");
-        serviceConfig.setRateLimit(100);
-        serviceConfig.setRateLimitPeriod("MINUTE");
+        serviceConfig.setDefaultRateLimit(new RateLimitConfig());
+        serviceConfig.getDefaultRateLimit().setLimit(100);
+        serviceConfig.getDefaultRateLimit().setPeriod("MINUTE");
         
         RouterProperties.RouteConfig routeConfig = new RouterProperties.RouteConfig();
         routeConfig.setPath("/servicea");
@@ -112,9 +116,13 @@ class RouterHandlerTest {
         when(mockPlugin.getOrder()).thenReturn(0);
         plugins.add(mockPlugin);
         
+        ServiceRegistry serviceRegistry = new ServiceRegistry(new RateLimiterService());
+        serviceRegistry.registerService("servicea", routerProperties.getServices().get("servicea"));
+
         routerHandler = new RouterHandler(webClientBuilder,
-                routerProperties,
-                rateLimiters,
+                serviceRegistry,
+                new RateLimiterService(),
+                List.of(),
                 plugins);
     }
 

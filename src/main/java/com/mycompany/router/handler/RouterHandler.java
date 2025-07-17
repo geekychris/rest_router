@@ -2,7 +2,6 @@ package com.mycompany.router.handler;
 
 import com.mycompany.router.config.RouterProperties;
 import com.mycompany.router.plugin.RouterPlugin;
-import io.github.resilience4j.ratelimiter.RateLimiter;
 import io.github.resilience4j.reactor.ratelimiter.operator.RateLimiterOperator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,26 +12,35 @@ import org.springframework.web.reactive.function.server.ServerRequest;
 import org.springframework.web.reactive.function.server.ServerResponse;
 import reactor.core.publisher.Mono;
 
+import com.mycompany.router.service.RateLimiterService;
+
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Random;
+
+import com.mycompany.router.service.ServiceRegistry;
+import com.mycompany.router.routing.RouteSelectionStrategy;
 
 @Component
 public class RouterHandler {
     private static final Logger logger = LoggerFactory.getLogger(RouterHandler.class);
     private final WebClient webClient;
-    private final RouterProperties routerProperties;
-    private final Map<String, RateLimiter> rateLimiters;
+    private final ServiceRegistry serviceRegistry;
+    private final RateLimiterService rateLimiterService;
+    private final List<RouteSelectionStrategy> routingStrategies;
     private final List<RouterPlugin> plugins;
     private final Random random = new Random();
 
     public RouterHandler(WebClient.Builder webClientBuilder,
-                        RouterProperties routerProperties,
-                        Map<String, RateLimiter> rateLimiters,
+                        ServiceRegistry serviceRegistry,
+                        RateLimiterService rateLimiterService,
+                        List<RouteSelectionStrategy> routingStrategies,
                         List<RouterPlugin> plugins) {
         this.webClient = webClientBuilder.build();
-        this.routerProperties = routerProperties;
-        this.rateLimiters = rateLimiters;
+        this.serviceRegistry = serviceRegistry;
+        this.rateLimiterService = rateLimiterService;
+        this.routingStrategies = routingStrategies;
         this.plugins = plugins.stream()
                 .sorted((p1, p2) -> Integer.compare(p1.getOrder(), p2.getOrder()))
                 .toList();
@@ -42,22 +50,22 @@ public class RouterHandler {
         String path = request.path();
         String serviceName = extractServiceName(path);
         
-        RouterProperties.ServiceConfig serviceConfig = routerProperties.getServices().get(serviceName);
+        RouterProperties.ServiceConfig serviceConfig = serviceRegistry.getService(serviceName);
         if (serviceConfig == null) {
             return ServerResponse.notFound().build();
         }
 
         return processWithPlugins(request)
-                .transformDeferred(RateLimiterOperator.of(rateLimiters.get(serviceName)))
+                .transformDeferred(RateLimiterOperator.of(rateLimiterService.getRateLimiter(serviceConfig, request)))
                 .flatMap(modifiedRequest -> {
-                    RouterProperties.RouteConfig selectedRoute = selectRoute(serviceConfig, modifiedRequest);
-                    if (selectedRoute == null) {
+                    Optional<RouterProperties.RouteConfig> selectedRoute = selectRoute(serviceConfig, modifiedRequest);
+                    if (selectedRoute.isEmpty()) {
                         return ServerResponse.notFound().build();
                     }
 
                     logRequest(modifiedRequest);
                     
-                    return forwardRequest(modifiedRequest, selectedRoute);
+                    return forwardRequest(modifiedRequest, selectedRoute.get());
                 });
     }
 
@@ -66,29 +74,15 @@ public class RouterHandler {
         return parts.length > 1 ? parts[1] : "";
     }
 
-    private RouterProperties.RouteConfig selectRoute(RouterProperties.ServiceConfig serviceConfig,
+    private Optional<RouterProperties.RouteConfig> selectRoute(RouterProperties.ServiceConfig serviceConfig,
                                                    ServerRequest request) {
-        List<RouterProperties.RouteConfig> matchingRoutes = serviceConfig.getRoutes().stream()
-                .filter(route -> matchesRoute(route, request))
-                .toList();
-
-        if (matchingRoutes.isEmpty()) {
-            return null;
-        }
-
-        // Weighted random selection for A/B testing
-        int totalWeight = matchingRoutes.stream().mapToInt(RouterProperties.RouteConfig::getWeight).sum();
-        int selection = random.nextInt(totalWeight);
-        int currentWeight = 0;
-
-        for (RouterProperties.RouteConfig route : matchingRoutes) {
-            currentWeight += route.getWeight();
-            if (selection < currentWeight) {
-                return route;
+        for (RouteSelectionStrategy strategy : routingStrategies) {
+            Optional<RouterProperties.RouteConfig> selectedRoute = strategy.selectRoute(serviceConfig.getRoutes(), request);
+            if (selectedRoute.isPresent()) {
+                return selectedRoute;
             }
         }
-
-        return matchingRoutes.get(0);
+        return Optional.empty();
     }
 
     private boolean matchesRoute(RouterProperties.RouteConfig route, ServerRequest request) {

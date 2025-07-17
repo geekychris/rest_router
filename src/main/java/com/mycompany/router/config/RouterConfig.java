@@ -1,16 +1,17 @@
 package com.mycompany.router.config;
 
 import com.mycompany.router.handler.RouterHandler;
-import io.github.resilience4j.ratelimiter.RateLimiter;
-import io.github.resilience4j.ratelimiter.RateLimiterConfig;
+import com.mycompany.router.routing.HeaderBasedStrategy;
+import com.mycompany.router.routing.RouteSelectionStrategy;
+import com.mycompany.router.routing.WeightedTrafficStrategy;
+import com.mycompany.router.service.RateLimiterService;
+import com.mycompany.router.service.ServiceRegistry;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.reactive.function.server.RouterFunction;
 import org.springframework.web.reactive.function.server.ServerResponse;
 
-import java.time.Duration;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.List;
 
 import static org.springframework.web.reactive.function.server.RequestPredicates.all;
 import static org.springframework.web.reactive.function.server.RouterFunctions.route;
@@ -24,19 +25,21 @@ public class RouterConfig {
     }
 
     @Bean
-    public Map<String, RateLimiter> rateLimiters(RouterProperties routerProperties) {
-        Map<String, RateLimiter> limiters = new HashMap<>();
-        
-        routerProperties.getServices().forEach((serviceName, config) -> {
-            RateLimiterConfig rateLimiterConfig = RateLimiterConfig.custom()
-                    .limitForPeriod(config.getRateLimit())
-                    .limitRefreshPeriod(Duration.parse("PT1" + config.getRateLimitPeriod()))
-                    .timeoutDuration(Duration.ofSeconds(5))
-                    .build();
-            
-            limiters.put(serviceName, RateLimiter.of(serviceName, rateLimiterConfig));
-        });
-        
-        return limiters;
+    public List<RouteSelectionStrategy> routingStrategies(HeaderBasedStrategy headerBasedStrategy,
+                                                        WeightedTrafficStrategy weightedTrafficStrategy) {
+        return List.of(headerBasedStrategy, weightedTrafficStrategy);
+    }
+
+    @Bean
+    public RateLimiterService rateLimiterService() {
+        return new RateLimiterService();
+    }
+
+    @Bean
+    public ServiceRegistry serviceRegistry(RouterProperties routerProperties,
+                                         RateLimiterService rateLimiterService) {
+        ServiceRegistry registry = new ServiceRegistry(rateLimiterService);
+        routerProperties.getServices().forEach(registry::registerService);
+        return registry;
     }
 }
