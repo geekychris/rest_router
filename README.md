@@ -1,322 +1,189 @@
-# REST Router Service
+# REST Router — A Reactive API Gateway
 
-This REST Router Service is built using Java 21 and Spring Boot, utilizing modern non-blocking I/O principles. It provides efficient routing of HTTP requests to multiple backend services with support for dynamic service configuration, rate limiting, and custom routing strategies.
+A lightweight, reactive (Spring WebFlux) API gateway with:
 
-## Features
+- **Identity-aware rate limiting** — token buckets keyed by authenticated principal, backed by Redis so limits hold across N instances.
+- **Pluggable auth** — API keys (default), bring-your-own `ApiKeyStore` for JWT/OAuth/etc.
+- **Async access logging** — bounded queue with pluggable sinks (Kafka, stdout JSON, file, no-op). Lossy by design under back-pressure, with drop counters exposed as metrics.
+- **Dynamic service registry** — REST admin API to add/remove/edit services without restart.
+- **Routing strategies** — weighted, header-based, plus an interface for your own.
+- **Plugin chain** — pre/post request hooks.
+- **Observability** — Micrometer + Prometheus, request id propagation, structured access log.
+- **First-class deployment artifacts** — Dockerfile, docker-compose stack, Kubernetes manifests (Deployment + Service + HPA + PDB + Ingress + ServiceMonitor).
 
-- **Non-blocking I/O**: Built on Spring WebFlux using Project Reactor for asynchronous request handling.
-- **Rate Limiting**: Configurable per service using Resilience4j.
-- **Dynamic Service Updates**: Manage services via a REST API without needing to restart.
-- **Custom Routing Strategies**: Supports routing based on traffic weights and HTTP headers.
-- **Plugin Architecture**: Easily extendable with custom pre-processing and post-processing logic.
+## Architecture (one screen)
 
-## Rate Limiting
-
-The router implements client-specific rate limiting using Resilience4j. Each service can define both default and client-specific rate limits.
-
-### Rate Limit Configuration
-
-Rate limits can be configured at two levels:
-1. **Default Rate Limit**: Applied when no client-specific limit exists or when no client ID is provided
-2. **Client-Specific Rate Limits**: Applied based on client identification via headers
-
-Example configuration:
-```yaml
-router:
-  services:
-    servicea:
-      baseUrl: http://servicea-backend:8080
-      clientIdHeader: X-Client-Id  # Custom header for client identification
-      defaultRateLimit:
-        limit: 100    # 100 requests
-        period: MINUTE  # per minute
-      clientRateLimits:
-        premium-client:
-          limit: 1000   # 1000 requests
-          period: MINUTE # per minute
-        basic-client:
-          limit: 100    # 100 requests
-          period: MINUTE # per minute
+```
+ ┌──────────────────┐     ┌────────────────┐     ┌────────────────┐
+ │ ApiKeyAuthFilter │────▶│ AdminAuthFilter│────▶│ RouterHandler  │
+ │  resolves        │     │ guards /admin/*│     │  route + RL +  │
+ │  Principal       │     │                │     │  forward       │
+ └────────┬─────────┘     └────────────────┘     └───┬────────┬───┘
+          │  reads                                   │        │
+          ▼                                          ▼        ▼
+   ┌──────────────┐                          ┌─────────────┐ ┌────────────┐
+   │ ApiKeyStore  │                          │ RateLimiter │ │ AccessLog  │
+   │ in-mem|Redis │                          │ Redis Lua   │ │ Pipeline   │
+   └──────────────┘                          └─────────────┘ └─────┬──────┘
+                                                                  │
+                                                       ┌──────────┼──────────┐
+                                                       ▼          ▼          ▼
+                                                    Kafka       stdout      file
 ```
 
-### Client Identification
+Full sequence and component notes: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-Clients are identified using a configurable header (default: `X-Client-Id`). You can customize this header per service:
+## Quick start
 
-```yaml
-services:
-  servicea:
-    clientIdHeader: X-API-Key  # Custom header name
-```
-
-### Making Requests
-
-Include the client ID header in your requests to apply client-specific rate limits:
+### 1. Local — full stack
 
 ```bash
-# Premium client (1000 requests per minute)
-curl -H "X-Client-Id: premium-client" http://localhost:8080/servicea/endpoint
-
-# Basic client (100 requests per minute)
-curl -H "X-Client-Id: basic-client" http://localhost:8080/servicea/endpoint
-
-# No client ID (uses default rate limit - 100 requests per minute)
-curl http://localhost:8080/servicea/endpoint
+docker compose up --build
 ```
 
-### Dynamic Updates
-
-Rate limits can be updated dynamically using the admin API:
+Brings up: gateway, Redis, Kafka (KRaft), Kafka UI (`:8081`), Prometheus (`:9090`), Grafana (`:3000`, admin/admin) and three mock backends.
 
 ```bash
-curl -X PUT http://localhost:8080/admin/services/servicea \
+# Anonymous request, hits the anonymous tier (30/min by default)
+curl http://localhost:8080/servicea/anything
+
+# Authenticated request (bootstrap key from application.yml)
+curl http://localhost:8080/servicea/anything -H "X-API-Key: demo-basic-secret"
+
+# Mint a new key
+curl -X POST http://localhost:8080/admin/apikeys \
+  -H "X-Admin-Key: local-admin-key" \
   -H "Content-Type: application/json" \
-  -d '{
-    "baseUrl": "http://servicea-backend:8080",
-    "clientIdHeader": "X-Client-Id",
-    "defaultRateLimit": {
-      "limit": 50,
-      "period": "MINUTE"
-    },
-    "clientRateLimits": {
-      "premium-client": {
-        "limit": 500,
-        "period": "MINUTE"
-      }
-    }
-  }'
+  -d '{"principalId":"alice","tier":"premium"}'
 ```
 
-### Rate Limit Periods
-
-Supported rate limit periods:
-- `SECOND` - Per second rate limiting
-- `MINUTE` - Per minute rate limiting
-- `HOUR` - Per hour rate limiting
-- `DAY` - Per day rate limiting
-
-### Error Handling
-
-When rate limits are exceeded, the service returns:
-- HTTP Status: `429 Too Many Requests`
-- Response Header: `X-RateLimit-Retry-After` with the number of nanoseconds until the rate limit resets
-
-## How It Works
-
-### Request Flow
-
-1. **Routing**: Incoming requests are analyzed to determine the target service. The service name is extracted from the request path.
-2. **Rate Limiting**: Requests are rate-limited per service using Resilience4j.
-3. **Route Selection**: Routes are selected based on defined strategies, such as weighted traffic distribution and header-based routing.
-4. **Forwarding**: Requests are forwarded to the appropriate backend service and the response is returned to the client.
-5. **Logging**: Requests without payloads are logged to a specified destination.
-
-### Configuration
-
-- **Service Configuration** is done through a YAML configuration file or via dynamic updates through the admin REST API.
-- **Routing Strategies** can be based on random traffic weight distribution (`WeightedTrafficStrategy`) or specific header values (`HeaderBasedStrategy`).
-
-### Example Configuration
-
-```yaml
-router:
-  services:
-    servicea:
-      baseUrl: http://servicea-backend:8080
-      clientIdHeader: X-Client-Id  # Header to identify clients
-      defaultRateLimit:
-        limit: 100
-        period: MINUTE
-      clientRateLimits:
-        premium-client:
-          limit: 1000
-          period: MINUTE
-        basic-client:
-          limit: 100
-          period: MINUTE
-      routes:
-        # Route 80% of traffic to v1
-        - path: /servicea
-          targetUrl: http://servicea-backend-v1:8080
-          weight: 80
-        
-        # Route 20% of traffic to v2
-        - path: /servicea
-          targetUrl: http://servicea-backend-v2:8080
-          weight: 20
-
-        # Route specific traffic to v2 based on headers
-        - path: /servicea
-          targetUrl: http://servicea-backend-v2:8080
-          headers:
-            x-version: v2
-            x-client-id: beta-tester
-```
-
-### Admin API
-
-- **GET** `/admin/services`: List all services.
-- **GET** `/admin/services/{serviceName}`: Get a specific service.
-- **POST** `/admin/services/{serviceName}`: Register a new service.
-- **PUT** `/admin/services/{serviceName}`: Update an existing service.
-- **DELETE** `/admin/services/{serviceName}`: Remove a service.
-
-### Building the Project
-
-To build and run the project:
-
-1. Ensure you have [Maven](https://maven.apache.org/install.html) installed.
-2. Navigate to the project directory.
-3. Run:
-   ```bash
-   ./mvnw clean install
-   ```
-4. Run the application:
-   ```bash
-   ./mvnw spring-boot:run
-   ```
-
-The application will be accessible at `http://localhost:8080` by default.
-
-## Extending the Router
-
-### Creating Custom Plugins
-
-The router supports custom plugins for request/response processing. To create a custom plugin, implement the `RouterPlugin` interface:
-
-```java
-public interface RouterPlugin {
-    Mono<ServerHttpRequest> preProcess(ServerHttpRequest request);
-    Mono<ServerHttpResponse> postProcess(ServerHttpResponse response);
-    int getOrder();
-}
-```
-
-Example plugin implementation:
-
-```java
-@Component
-public class CustomHeaderPlugin implements RouterPlugin {
-    @Override
-    public Mono<ServerHttpRequest> preProcess(ServerHttpRequest request) {
-        return Mono.just(request.mutate()
-                .header("X-Custom-Header", "custom-value")
-                .build());
-    }
-
-    @Override
-    public Mono<ServerHttpResponse> postProcess(ServerHttpResponse response) {
-        response.getHeaders().add("X-Response-Header", "processed");
-        return Mono.just(response);
-    }
-
-    @Override
-    public int getOrder() {
-        return 1; // plugins are executed in order (lower numbers first)
-    }
-}
-```
-
-### Creating Custom Routing Strategies
-
-To implement a custom routing strategy, implement the `RouteSelectionStrategy` interface:
-
-```java
-public interface RouteSelectionStrategy {
-    Optional<RouterProperties.RouteConfig> selectRoute(
-        List<RouterProperties.RouteConfig> routes,
-        ServerRequest request
-    );
-}
-```
-
-Example strategy implementation:
-
-```java
-@Component
-public class GeoLocationStrategy implements RouteSelectionStrategy {
-    @Override
-    public Optional<RouterProperties.RouteConfig> selectRoute(
-            List<RouterProperties.RouteConfig> routes,
-            ServerRequest request) {
-        String country = request.headers()
-                .firstHeader("X-Country-Code");
-        
-        return routes.stream()
-                .filter(route -> matchesCountry(route, country))
-                .findFirst();
-    }
-
-    private boolean matchesCountry(RouterProperties.RouteConfig route,
-                                 String country) {
-        return route.getHeaders().getOrDefault("X-Country-Code", "*")
-                .equals(country);
-    }
-}
-```
-
-Register your custom components in the Spring configuration:
-
-```java
-@Configuration
-public class CustomConfig {
-    @Bean
-    public List<RouteSelectionStrategy> routingStrategies(
-            HeaderBasedStrategy headerBasedStrategy,
-            WeightedTrafficStrategy weightedTrafficStrategy,
-            GeoLocationStrategy geoLocationStrategy) {
-        return List.of(
-            geoLocationStrategy,      // Try geo-location first
-            headerBasedStrategy,      // Then try header matching
-            weightedTrafficStrategy  // Finally, fall back to weighted distribution
-        );
-    }
-}
-```
-
-## Docker Deployment
-
-The service can be deployed using Docker and Docker Compose. The repository includes both a `Dockerfile` and a `docker-compose.yml` file for easy deployment.
-
-### Building and Running with Docker
+Run the smoke suite:
 
 ```bash
-# Build the Docker image
-docker build -t rest-router .
-
-# Run the container
-docker run -p 8080:8080 rest-router
+./scripts/smoke.sh
 ```
 
-### Using Docker Compose
-
-The included `docker-compose.yml` file sets up both the router service and a Kafka instance for logging:
+Load test:
 
 ```bash
-# Start all services
-docker-compose up -d
-
-# View logs
-docker-compose logs -f
-
-# Stop all services
-docker-compose down
+k6 run scripts/loadtest.js
 ```
 
-The Docker Compose configuration includes:
+### 2. Local — JVM only
 
-- REST Router Service with configurable memory settings
-- Kafka for request logging
-- Volume mapping for external configuration
+```bash
+mvn spring-boot:run
+```
 
-### Configuration with Docker
+You'll need Redis on `localhost:6379` (or set `REDIS_HOST`/`REDIS_PORT`) — or set `router.rateLimits.backend=local` and `router.auth.storage=in-memory` for a zero-dep dev mode.
 
-Create a `config` directory in your project root and place your `application.yml` there. The Docker Compose configuration will mount this directory into the container.
+### 3. Kubernetes
 
-Environment variables can be adjusted in the `docker-compose.yml` file:
+```bash
+kubectl apply -k deploy/k8s
+```
 
-```yaml
-environment:
-  - SPRING_PROFILES_ACTIVE=prod
-  - JAVA_OPTS=-Xmx512m -Xms256m
+See [docs/OPERATIONS.md](docs/OPERATIONS.md) for production checklist (sealed secrets, managed Redis, multi-AZ, etc.).
+
+## Configuration
+
+Everything is under the `router.*` prefix in `application.yml`.
+
+| Key | Default | What it does |
+|---|---|---|
+| `router.auth.enabled` | `true` | Master switch for API-key auth |
+| `router.auth.apiKeyHeader` | `X-API-Key` | Header to read (also accepts `Authorization: Bearer`) |
+| `router.auth.storage` | `in-memory` | `in-memory` or `redis` |
+| `router.auth.bootstrapKeys[]` | `[]` | Keys to upsert on startup (for dev/demo) |
+| `router.rateLimits.backend` | `redis` | `redis` or `local` (single-node) |
+| `router.rateLimits.tiers.{name}` | — | Per-tier `{limit, period}` |
+| `router.accessLog.enabled` | `true` | Master switch |
+| `router.accessLog.queueCapacity` | `10000` | Bounded buffer size; overflow = dropped events |
+| `router.accessLog.sink` | `stdout` | `kafka` \| `stdout` \| `file` \| `noop` |
+| `router.accessLog.kafka.topic` | `gateway-access-log` | Kafka topic |
+| `router.admin.apiKey` | `changeme` | Shared key for `/admin/**`. **Override via env.** |
+| `router.services.{name}.requireAuth` | `false` | Reject anonymous callers on this service |
+| `router.services.{name}.defaultRateLimit` | tier policy | Per-service override |
+| `router.services.{name}.clientRateLimits.{principalId}` | — | Per-principal override |
+| `router.services.{name}.routes[].stripPrefix` | `""` | Path prefix to strip before forwarding |
+
+## Rate-limit resolution order
+
+For each request, the limit that applies is the first match:
+
+1. `services.{svc}.clientRateLimits.{principalId}`
+2. `services.{svc}.defaultRateLimit`
+3. `rateLimits.tiers.{principal.tier}`
+4. Hard fallback: `60 / MINUTE`
+
+Anonymous callers are bucketed by remote IP (`anon:1.2.3.4`).
+
+## Admin API
+
+All admin endpoints require `X-Admin-Key`.
+
+| Method | Path | Body |
+|---|---|---|
+| GET | `/admin/services` | — |
+| GET | `/admin/services/{name}` | — |
+| POST | `/admin/services/{name}` | `ServiceConfig` JSON |
+| PUT | `/admin/services/{name}` | `ServiceConfig` JSON |
+| DELETE | `/admin/services/{name}` | — |
+| GET | `/admin/apikeys` | — |
+| POST | `/admin/apikeys` | `{principalId, tier, scopes?, expiresAt?}` → `{id, key, ...}` |
+| DELETE | `/admin/apikeys/{id}` | — |
+
+The minted `key` from `POST /admin/apikeys` is only returned once.
+
+## Observability
+
+- `GET /actuator/health/{liveness,readiness}`
+- `GET /actuator/prometheus` — Micrometer metrics, including:
+  - `gateway_requests_total`
+  - `gateway_rate_limited_total`
+  - `gateway_request_latency_seconds` (timer)
+  - `gateway_access_log_published_total{sink=...}`
+  - `gateway_access_log_dropped_total{sink=...}`
+
+Each response carries `X-Request-Id` (echoed if the client supplied one) and `X-RateLimit-{Limit,Remaining}`. Rate-limited responses also carry `X-RateLimit-Retry-After-Ms` and `Retry-After`.
+
+## Extending
+
+See [docs/EXTENDING.md](docs/EXTENDING.md). Short version:
+
+| What | Interface | How |
+|---|---|---|
+| New auth source | `ApiKeyStore` | Register a `@Bean` |
+| New rate-limit algorithm | `RateLimiter` | Register a `@Bean` (overrides default) |
+| New access-log sink | `AccessLogSink` | Register a `@Bean` and set `router.accessLog.sink=<your name>` |
+| New routing strategy | `RouteSelectionStrategy` | `@Component` — picked up automatically |
+| Request/response hook | `RouterPlugin` | `@Component` |
+
+## Operating
+
+See [docs/OPERATIONS.md](docs/OPERATIONS.md): deployment, scaling, troubleshooting the access-log queue, Redis sizing, Kafka topic config.
+
+## Layout
+
+```
+src/main/java/com/mycompany/router/
+  RouterApplication.java
+  auth/         API key model, store, hasher, filter
+  ratelimit/    Distributed + local token bucket, resolver
+  accesslog/    Pipeline, event, sinks
+  admin/        Admin auth filter
+  config/       Properties + Spring wiring
+  controller/   /admin/services, /admin/apikeys
+  handler/      RouterHandler (the request flow)
+  plugin/       RouterPlugin interface
+  routing/      Strategies
+  service/      ServiceRegistry
+
+deploy/
+  prometheus.yml
+  k8s/          namespace, configmap, secret, deployment, service, hpa, pdb, ingress, redis, servicemonitor, kustomization
+
+scripts/
+  smoke.sh      curl-based end-to-end sanity
+  loadtest.js   k6 load test
 ```

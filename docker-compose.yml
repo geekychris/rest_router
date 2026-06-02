@@ -1,31 +1,96 @@
-version: '3.8'
-
 services:
   router:
     build: .
+    image: rest-router:dev
     ports:
       - "8080:8080"
     environment:
-      - SPRING_PROFILES_ACTIVE=prod
-      - JAVA_OPTS=-Xmx512m -Xms256m
-    volumes:
-      - ./config:/app/config
+      SPRING_PROFILES_ACTIVE: docker
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      ADMIN_API_KEY: local-admin-key
+      JAVA_OPTS: "-Xmx512m -Xms256m"
     depends_on:
-      - kafka
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    restart: unless-stopped
+    volumes:
+      - ./config:/app/config:ro
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   kafka:
-    image: bitnami/kafka:latest
+    image: bitnami/kafka:3.7
     ports:
       - "9092:9092"
+      - "9094:9094"
     environment:
-      - KAFKA_CFG_NODE_ID=0
-      - KAFKA_CFG_PROCESS_ROLES=controller,broker
-      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
-      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka:9093
-      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      KAFKA_CFG_NODE_ID: "0"
+      KAFKA_CFG_PROCESS_ROLES: "controller,broker"
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094"
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT"
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "0@kafka:9093"
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      ALLOW_PLAINTEXT_LISTENER: "yes"
     volumes:
       - kafka_data:/bitnami/kafka
 
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    ports:
+      - "8081:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    depends_on:
+      - kafka
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    depends_on:
+      - prometheus
+
+  # Two tiny mock backends so weighted routing is visible end-to-end.
+  servicea-backend-v1:
+    image: hashicorp/http-echo
+    command: ["-text=hello from servicea v1", "-listen=:8080"]
+    expose: ["8080"]
+  servicea-backend-v2:
+    image: hashicorp/http-echo
+    command: ["-text=hello from servicea v2", "-listen=:8080"]
+    expose: ["8080"]
+  serviceb-backend:
+    image: hashicorp/http-echo
+    command: ["-text=hello from serviceb", "-listen=:8080"]
+    expose: ["8080"]
+
 volumes:
   kafka_data:
+  redis_data:

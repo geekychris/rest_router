@@ -17,6 +17,7 @@
     <properties>
         <java.version>21</java.version>
         <spring-cloud.version>2023.0.0</spring-cloud.version>
+        <testcontainers.version>1.19.7</testcontainers.version>
     </properties>
 
     <dependencies>
@@ -30,17 +31,31 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
         <dependency>
-            <groupId>org.springframework.kafka</groupId>
-            <artifactId>spring-kafka</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.github.resilience4j</groupId>
-            <artifactId>resilience4j-spring-boot3</artifactId>
-            <version>2.1.0</version>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- Messaging -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
+
+        <!-- Observability -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- Resilience (timeouts + circuit breakers on the downstream call) -->
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-spring-boot3</artifactId>
+            <version>2.1.0</version>
         </dependency>
         <dependency>
             <groupId>io.github.resilience4j</groupId>
@@ -57,6 +72,30 @@
         <dependency>
             <groupId>io.projectreactor</groupId>
             <artifactId>reactor-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>kafka</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.redis</groupId>
+            <artifactId>testcontainers-redis</artifactId>
+            <version>2.2.2</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

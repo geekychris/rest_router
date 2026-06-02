@@ -1,0 +1,49 @@
+# Minimal single-node Redis for non-prod clusters. For production, deploy
+# Redis Sentinel or a managed Redis (ElastiCache, MemoryDB, Cloud Memorystore)
+# and just point REDIS_HOST at it.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-master
+  namespace: gateway
+spec:
+  serviceName: redis-master
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          args: ["redis-server", "--appendonly", "yes"]
+          ports:
+            - containerPort: 6379
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits:   { cpu: 500m, memory: 512Mi }
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: { requests: { storage: 5Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-master
+  namespace: gateway
+spec:
+  clusterIP: None
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
