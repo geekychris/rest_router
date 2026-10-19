@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="Rest Router logo" width="180">
+</p>
+
 # REST Router — A Reactive API Gateway
 
 A lightweight, reactive (Spring WebFlux) API gateway with:
